@@ -2,13 +2,30 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 )
 
 func main() {
+	var isHelp bool
+	var command string
+	var indexName string
+	var docID string
+
+	flag.BoolVar(&isHelp, "h", false, "prints the usage of this executable")
+	flag.StringVar(&command, "q", "", "command or query to apply to cluster")
+	flag.StringVar(&indexName, "index", "", "index name to apply command or query to")
+	flag.StringVar(&docID, "id", "", "document id to get")
+	flag.Parse()
+
+	if isHelp {
+		flag.Usage()
+		return
+	}
 
 	esHost := os.Getenv("ESHOST")
 	if esHost == "" {
@@ -22,13 +39,18 @@ func main() {
 	}
 
 	client := &http.Client{}
-	command := os.Args[1]
+
 	switch command {
 	case "ls":
 		getIndicies(client, esHost)
 	case "search":
-		searchIndex(client, esHost, os.Args[2])
+		searchIndex(client, esHost, indexName)
+	case "doc":
+		docIndex(client, esHost, indexName, docID)
+	default:
+		flag.Usage()
 	}
+	return
 }
 
 type IndexEntries []IndexEntry
@@ -54,9 +76,16 @@ func getIndicies(client *http.Client, esHost string) error {
 		return nil
 	}
 
+	var names []string
 	for _, v := range entries {
-		fmt.Println(v.Index)
+		names = append(names, v.Index)
 	}
+	sort.Strings(names)
+
+	for _, v := range names {
+		fmt.Println(v)
+	}
+
 	return nil
 }
 
@@ -68,7 +97,7 @@ type SearchResponse struct {
 
 func searchIndex(client *http.Client, esHost string, indexName string) error {
 	r := strings.NewReader(`{"size": 15}`)
-	resp, err := client.Post(fmt.Sprintf("%s/%s/%s", esHost, indexName, "_search?format=json"), "application/json", r)
+	resp, err := client.Post(fmt.Sprintf("%s/%s/_search?format=json", esHost, indexName), "application/json", r)
 	if err != nil {
 		fmt.Printf("Error searching index %s: %v\n", indexName, err)
 		return err
@@ -80,11 +109,44 @@ func searchIndex(client *http.Client, esHost string, indexName string) error {
 
 	err = dec.Decode(&searchResponse)
 	if err != nil {
-		fmt.Printf("Error parsing search index %s: %v\n", indexName, err)
+		fmt.Printf("Error parsing search index <%s>: %v\n", indexName, err)
 		return err
 	}
 
 	fmt.Printf("%v, %v", resp.StatusCode, len(searchResponse.Hits.Hits))
+	for _, v := range searchResponse.Hits.Hits {
+		b, _ := json.MarshalIndent(v, "", "  ")
+		fmt.Printf("%s\n", b)
+	}
+
+	return nil
+}
+
+func docIndex(client *http.Client, esHost string, indexName string, docID string) error {
+	// hacky way to work around routing :D
+	r := strings.NewReader(fmt.Sprintf(`{
+		"query": {
+		  "match": {
+			"_id": "%s"
+		  }
+		}
+	  }`, docID))
+	resp, err := client.Post(fmt.Sprintf("%s/%s/_search?format=json", esHost, indexName), "application/json", r)
+	if err != nil {
+		fmt.Printf("Error retrieving document <%s> from <%s>: %v\n", docID, indexName, err)
+		return err
+	}
+
+	var searchResponse SearchResponse
+	dec := json.NewDecoder(resp.Body)
+	defer resp.Body.Close()
+
+	err = dec.Decode(&searchResponse)
+	if err != nil {
+		fmt.Printf("Error parsing search index <%s>: %v\n", indexName, err)
+		return err
+	}
+
 	for _, v := range searchResponse.Hits.Hits {
 		b, _ := json.MarshalIndent(v, "", "  ")
 		fmt.Printf("%s\n", b)
